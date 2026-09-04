@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ploxi Signature Verification</title>
+</head>
+<body style="margin:0;padding:0;background:#f4f6f5;font-family:Arial,Helvetica,sans-serif;color:#263238;">
+
+<div style="max-width:720px;margin:0 auto;padding:32px 16px;">
+  <div style="background:#123a2e;border-radius:12px 12px 0 0;padding:28px 32px;">
+    <p style="margin:0;color:#8fd4b0;font-size:11px;letter-spacing:2px;font-weight:bold;">PLOXI EARTH</p>
+    <h1 style="margin:6px 0 0 0;color:#ffffff;font-size:24px;">Electronic Signature Verification</h1>
+    <p style="margin:8px 0 0 0;color:#c8d8d0;font-size:13px;">Verify a PDF signed on the Ploxi platform. Your file is hashed <b>in your own browser</b> and never uploaded anywhere.</p>
+  </div>
+
+  <div style="background:#ffffff;border:1px solid #e2e8e5;border-top:none;border-radius:0 0 12px 12px;padding:24px 32px;">
+
+    <div id="drop" style="border:2px dashed #b9c6c1;border-radius:12px;padding:36px 20px;text-align:center;cursor:pointer;background:#f9fbfa;margin-bottom:18px;">
+      <p style="margin:0;font-size:15px;font-weight:bold;color:#1c6b48;">Drop a signed PDF here</p>
+      <p style="margin:6px 0 0 0;font-size:12px;color:#5f6f68;">or click to choose a file</p>
+      <input type="file" id="file" accept="application/pdf" style="display:none;">
+    </div>
+
+    <div style="margin-bottom:18px;">
+      <label style="font-size:12px;color:#5f6f68;display:block;margin-bottom:4px;">...or paste a document fingerprint (SHA-256, hex):</label>
+      <input type="text" id="hashInput" placeholder="e.g. 1b29e2db728c..." style="width:100%;box-sizing:border-box;padding:10px 12px;border:1px solid #cfd8d4;border-radius:8px;font-family:monospace;font-size:12px;">
+      <button id="hashBtn" style="margin-top:8px;background:#1c6b48;color:#fff;border:none;border-radius:8px;padding:9px 18px;font-size:13px;font-weight:bold;cursor:pointer;">Verify fingerprint</button>
+    </div>
+
+    <div id="status" style="display:none;border-radius:10px;padding:14px 16px;font-size:13px;line-height:1.6;margin-bottom:14px;"></div>
+    <div id="chainStatus" style="display:none;border-radius:10px;padding:14px 16px;font-size:13px;line-height:1.6;background:#f1f5f3;border:1px solid #dde6e2;color:#37474f;"></div>
+
+    <p style="font-size:11px;color:#78909c;line-height:1.6;margin-top:20px;">
+      How this works: every signature on the Ploxi platform is recorded as an entry in a hash chain.
+      Each entry's fingerprint is derived from the previous one, so altering or removing any record breaks the chain visibly.
+      Ploxi publishes the chain to this public repository daily, dated by GitHub - past records cannot be quietly rewritten.
+      The full specification is in <a href="SPEC.md" style="color:#1c6b48;">SPEC.md</a>; the verification logic is open source in <a href="open/chain-verification.ts" style="color:#1c6b48;">open/chain-verification.ts</a>.
+    </p>
+  </div>
+
+  <p style="text-align:center;font-size:11px;color:#78909c;margin-top:16px;">Ploxi Consult (OPC) Pvt. Ltd. - Bangalore, India - <a href="https://www.ploxi.earth" style="color:#1c6b48;">ploxi.earth</a></p>
+</div>
+
+<script>
+'use strict';
+const DATA_URLS = { events: 'events.jsonl', anchors: 'anchors.jsonl' };
+
+async function sha256Hex(buffer) {
+  const digest = await crypto.subtle.digest('SHA-256', buffer);
+  return Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+// Chain scheme (must match SPEC.md / open/chain-verification.ts):
+// record_hash = SHA256( prev_hash || '|' || agreement_id || '|' || event || '|' || doc_sha256 || '|' || created_at )
+async function computeRecordHash(prev, agreementId, event, docSha, createdAt) {
+  const input = (prev || 'GENESIS') + '|' + agreementId + '|' + event + '|' + docSha + '|' + createdAt;
+  const buf = new TextEncoder().encode(input);
+  return sha256Hex(buf);
+}
+
+async function loadData() {
+  const [evRes, anRes] = await Promise.all([
+    fetch(DATA_URLS.events + '?t=' + Date.now()),
+    fetch(DATA_URLS.anchors + '?t=' + Date.now()),
+  ]);
+  const events = (await evRes.text()).split('\n').filter(l => l.trim()).map(l => JSON.parse(l));
+  const anchors = (await anRes.text()).split('\n').filter(l => l.trim()).map(l => JSON.parse(l));
+  return { events, anchors };
+}
+
+function verifyChain(events) {
+  let prev = null;
+  for (const e of events) {
+    // recomputed = computeRecordHash(...) but synchronous crypto isn't available;
+    // we precompute below in the caller with await. Here we only link-check.
+    if (e.prev_hash !== (prev || null)) return { ok: false, brokenAt: e.record_hash };
+    prev = e.record_hash;
+  }
+  return { ok: true, head: prev };
+}
+
+async function fullVerify(events) {
+  let prev = null;
+  for (const e of events) {
+    const recomputed = await computeRecordHash(prev, e.agreement_id, e.event, e.doc_sha256, e.created_at);
+    if (recomputed !== e.record_hash) return { ok: false, brokenAt: e.record_hash };
+    if (e.prev_hash !== prev) return { ok: false, brokenAt: e.record_hash };
+    prev = e.record_hash;
+  }
+  return { ok: true, head: prev };
+}
+
+function fmtDate(iso) {
+  return new Date(iso).toLocaleString('en-IN', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+function showStatus(ok, html) {
+  const el = document.getElementById('status');
+  el.style.display = 'block';
+  el.style.background = ok ? '#e8f5ee' : '#fdecea';
+  el.style.border = '1px solid ' + (ok ? '#bfe3d0' : '#f5c6c0');
+  el.style.color = ok ? '#1f3a2e' : '#7f1d1d';
+  el.innerHTML = html;
+}
+
+async function verifyByHash(hash) {
+  hash = (hash || '').trim().toLowerCase();
+  if (!/^[a-f0-9]{64}$/.test(hash)) { showStatus(false, 'That is not a valid SHA-256 fingerprint (expected 64 hex characters).'); return; }
+  showStatus(true, 'Checking the public signing log...');
+  let data;
+  try { data = await loadData(); } catch (e) { showStatus(false, 'Could not load the signing log. Please retry.'); return; }
+
+  const match = data.events.filter(e => e.doc_sha256 === hash);
+  if (match.length === 0) {
+    showStatus(false, '<b>No matching signature record found</b> in the public log (which currently contains ' + data.events.length + ' signature events). Either the document was not signed on the Ploxi platform, or its signature has not yet been published to the public log (publication happens daily).');
+  } else {
+    const rows = match.map(e =>
+      '<b>Match found.</b> ' + e.event.replace('_', ' ') +
+      ' on ' + fmtDate(e.created_at) +
+      ' (agreement ' + e.agreement_id.slice(0, 8) + '...)').join('<br>');
+    showStatus(true, rows + '<br><br>Fingerprint:<br><span style="font-family:monospace;font-size:11px;word-break:break-all;">' + hash + '</span>');
+  }
+
+  const chain = await fullVerify(data.events);
+  const chainEl = document.getElementById('chainStatus');
+  chainEl.style.display = 'block';
+  if (!chain.ok) {
+    chainEl.innerHTML = '<b style="color:#7f1d1d;">Chain integrity check FAILED</b> at one of the records - the log does not verify. This should never happen; please contact Ploxi.';
+  } else {
+    const lastAnchor = data.anchors[data.anchors.length - 1];
+    const anchored = lastAnchor && chain.head && lastAnchor.head === chain.head;
+    chainEl.innerHTML = '<b>Chain integrity: OK</b> - all ' + data.events.length + ' published signature events link correctly.' +
+      (anchored ? '<br>Latest public anchor: ' + lastAnchor.date + ' (matches current chain head).' : lastAnchor ? '<br>Latest public anchor: ' + lastAnchor.date + '. The chain has grown since; the next daily publication will anchor it.' : '<br>No anchors published yet.');
+  }
+}
+
+const drop = document.getElementById('drop');
+const fileInput = document.getElementById('file');
+drop.addEventListener('click', () => fileInput.click());
+drop.addEventListener('dragover', e => { e.preventDefault(); drop.style.background = '#eef5f1'; });
+drop.addEventListener('dragleave', () => { drop.style.background = '#f9fbfa'; });
+drop.addEventListener('drop', e => {
+  e.preventDefault();
+  drop.style.background = '#f9fbfa';
+  const f = e.dataTransfer.files[0];
+  if (f) handleFile(f);
+});
+fileInput.addEventListener('change', () => { if (fileInput.files[0]) handleFile(fileInput.files[0]); });
+
+async function handleFile(f) {
+  showStatus(true, 'Hashing <b>' + f.name + '</b> locally (the file never leaves your device)...');
+  const buf = await f.arrayBuffer();
+  const hash = await sha256Hex(buf);
+  await verifyByHash(hash);
+}
+
+document.getElementById('hashBtn').addEventListener('click', () => verifyByHash(document.getElementById('hashInput').value));
+</script>
+</body>
+</html>
