@@ -3,7 +3,7 @@
 Public, tamper-evident log of electronic signatures executed on the
 [Ploxi Earth](https://www.ploxi.earth) platform.
 
-- **Verify a signed PDF:** open the [verification page](https://ploxi-earth.github.io/signing-log/) and drop in your document. The file is hashed in your browser and never uploaded.
+- **Verify a signed PDF:** open the [verification page](https://verify.ploxi.earth) and drop in your document. The file is hashed in your browser and never uploaded.
 - **How it works:** [SPEC.md](SPEC.md) - the hash-chain scheme, the published fields, and what verification does (and does not) prove.
 - **Open source logic:** [open/chain-verification.ts](open/chain-verification.ts) - the reference implementation, extracted from the platform's signing engine.
 
