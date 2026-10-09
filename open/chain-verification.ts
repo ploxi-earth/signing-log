@@ -9,7 +9,7 @@
 
 export interface PublicSignatureEvent {
   agreement_id: string;
-  event: 'vendor_signed' | 'countersigned';
+  event: 'vendor_signed' | 'countersigned' | 'cert_issued';
   doc_sha256: string;
   prev_hash: string | null;
   record_hash: string;

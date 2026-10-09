@@ -117,8 +117,9 @@ async function verifyByHash(hash) {
   if (match.length === 0) {
     showStatus(false, '<b>No matching signature record found</b> in the public log (which currently contains ' + data.events.length + ' signature events). Either the document was not signed on the Ploxi platform, or its signature has not yet been published to the public log (publication happens daily).');
   } else {
+    const EVENT_LABELS = { vendor_signed: 'vendor signed', countersigned: 'counter-signed', cert_issued: 'certificate fingerprint registered' };
     const rows = match.map(e =>
-      '<b>Match found.</b> ' + e.event.replace('_', ' ') +
+      '<b>Match found.</b> ' + (EVENT_LABELS[e.event] || e.event.replace('_', ' ')) +
       ' on ' + fmtDate(e.created_at) +
       ' (agreement ' + e.agreement_id.slice(0, 8) + '...)').join('<br>');
     showStatus(true, rows + '<br><br>Fingerprint:<br><span style="font-family:monospace;font-size:11px;word-break:break-all;">' + hash + '</span>');

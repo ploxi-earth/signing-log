@@ -18,13 +18,20 @@ document can be checked by anyone, without trusting Ploxi's own database.
 ```json
 {
   "agreement_id": "uuid",
-  "event": "vendor_signed | countersigned",
+  "event": "vendor_signed | countersigned | cert_issued",
   "doc_sha256": "sha256 hex of the signed PDF served to the signer",
   "prev_hash": "record_hash of the previous event (null = first event)",
   "record_hash": "see scheme below",
   "created_at": "ISO-8601 UTC timestamp"
 }
 ```
+
+`cert_issued` records the **Agreement fingerprint** printed on the audit
+certificate page — the SHA-256 of the signed agreement pages *excluding* that
+certificate page (a page cannot contain the hash of the file it lives inside,
+so the full delivered PDF is matched by the `countersigned` event instead,
+while `cert_issued` makes the printed number itself checkable by pasting it
+into the verifier).
 
 Signer names, emails, IP addresses and other evidence are recorded privately on the
 platform (and printed inside the signed PDF's audit certificate page) but are
