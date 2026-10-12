@@ -66,20 +66,10 @@ async function loadData() {
     fetch(DATA_URLS.events + '?t=' + Date.now()),
     fetch(DATA_URLS.anchors + '?t=' + Date.now()),
   ]);
+  if (!evRes.ok || !anRes.ok) throw new Error('fetch failed');
   const events = (await evRes.text()).split('\n').filter(l => l.trim()).map(l => JSON.parse(l));
   const anchors = (await anRes.text()).split('\n').filter(l => l.trim()).map(l => JSON.parse(l));
   return { events, anchors };
-}
-
-function verifyChain(events) {
-  let prev = null;
-  for (const e of events) {
-    // recomputed = computeRecordHash(...) but synchronous crypto isn't available;
-    // we precompute below in the caller with await. Here we only link-check.
-    if (e.prev_hash !== (prev || null)) return { ok: false, brokenAt: e.record_hash };
-    prev = e.record_hash;
-  }
-  return { ok: true, head: prev };
 }
 
 async function fullVerify(events) {
@@ -97,45 +87,120 @@ function fmtDate(iso) {
   return new Date(iso).toLocaleString('en-IN', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
-function showStatus(ok, html) {
+// Every anchor must point at an existing event whose record_hash equals the anchored head.
+// `events` in an anchor is the number of events in the chain when it was published.
+function verifyAnchors(events, anchors) {
+  let covered = 0;
+  for (const a of anchors) {
+    const n = a && a.events;
+    if (!Number.isInteger(n) || n < 1 || n > events.length || events[n - 1].record_hash !== a.head) {
+      return { ok: false, badAnchor: a, covered: 0 };
+    }
+    covered = Math.max(covered, n);
+  }
+  return { ok: true, covered };
+}
+
+// Build DOM content without innerHTML: parts are strings (rendered as text),
+// nodes, or null (line break).
+function frag(...parts) {
+  const f = document.createDocumentFragment();
+  for (const p of parts) {
+    if (p === null) f.appendChild(document.createElement('br'));
+    else if (typeof p === 'string') f.appendChild(document.createTextNode(p));
+    else f.appendChild(p);
+  }
+  return f;
+}
+function bold(text, color) {
+  const b = document.createElement('b');
+  b.textContent = text;
+  if (color) b.style.color = color;
+  return b;
+}
+function mono(text) {
+  const s = document.createElement('span');
+  s.style.cssText = 'font-family:monospace;font-size:11px;word-break:break-all;';
+  s.textContent = text;
+  return s;
+}
+
+const STATUS_STYLES = {
+  ok:      { bg: '#e8f5ee', border: '#bfe3d0', color: '#1f3a2e' },
+  warn:    { bg: '#fff6e0', border: '#f3d999', color: '#6b4a00' },
+  error:   { bg: '#fdecea', border: '#f5c6c0', color: '#7f1d1d' },
+  neutral: { bg: '#f1f5f3', border: '#dde6e2', color: '#37474f' },
+};
+
+function showStatus(kind, content) {
   const el = document.getElementById('status');
+  const s = STATUS_STYLES[kind];
   el.style.display = 'block';
-  el.style.background = ok ? '#e8f5ee' : '#fdecea';
-  el.style.border = '1px solid ' + (ok ? '#bfe3d0' : '#f5c6c0');
-  el.style.color = ok ? '#1f3a2e' : '#7f1d1d';
-  el.innerHTML = html;
+  el.style.background = s.bg;
+  el.style.border = '1px solid ' + s.border;
+  el.style.color = s.color;
+  el.replaceChildren(typeof content === 'string' ? document.createTextNode(content) : content);
+}
+
+function showChainStatus(content) {
+  const el = document.getElementById('chainStatus');
+  el.style.display = 'block';
+  el.replaceChildren(content);
 }
 
 async function verifyByHash(hash) {
   hash = (hash || '').trim().toLowerCase();
-  if (!/^[a-f0-9]{64}$/.test(hash)) { showStatus(false, 'That is not a valid SHA-256 fingerprint (expected 64 hex characters).'); return; }
-  showStatus(true, 'Checking the public signing log...');
+  document.getElementById('chainStatus').style.display = 'none';
+  if (!/^[a-f0-9]{64}$/.test(hash)) { showStatus('error', 'That is not a valid SHA-256 fingerprint (expected 64 hex characters).'); return; }
+  showStatus('neutral', 'Checking the public signing log...');
   let data;
-  try { data = await loadData(); } catch (e) { showStatus(false, 'Could not load the signing log. Please retry.'); return; }
+  try { data = await loadData(); } catch (e) { showStatus('error', 'Could not load the signing log. Please retry.'); return; }
 
-  const match = data.events.filter(e => e.doc_sha256 === hash);
-  if (match.length === 0) {
-    showStatus(false, '<b>No matching signature record found</b> in the public log (which currently contains ' + data.events.length + ' signature events). Either the document was not signed on the Ploxi platform, or its signature has not yet been published to the public log (publication happens daily).');
-  } else {
-    const EVENT_LABELS = { vendor_signed: 'vendor signed', countersigned: 'counter-signed', cert_issued: 'certificate fingerprint registered' };
-    const rows = match.map(e =>
-      '<b>Match found.</b> ' + (EVENT_LABELS[e.event] || e.event.replace('_', ' ')) +
-      ' on ' + fmtDate(e.created_at) +
-      ' (agreement ' + e.agreement_id.slice(0, 8) + '...)').join('<br>');
-    showStatus(true, rows + '<br><br>Fingerprint:<br><span style="font-family:monospace;font-size:11px;word-break:break-all;">' + hash + '</span>');
-  }
-
+  // 1. Verify the whole chain and every anchor before reporting any match.
   const chain = await fullVerify(data.events);
-  const chainEl = document.getElementById('chainStatus');
-  chainEl.style.display = 'block';
+  const anchorCheck = chain.ok ? verifyAnchors(data.events, data.anchors) : null;
+
   if (!chain.ok) {
-    chainEl.innerHTML = '<b style="color:#7f1d1d;">Chain integrity check FAILED</b> at one of the records - the log does not verify. This should never happen; please contact Ploxi.';
-  } else {
-    const lastAnchor = data.anchors[data.anchors.length - 1];
-    const anchored = lastAnchor && chain.head && lastAnchor.head === chain.head;
-    chainEl.innerHTML = '<b>Chain integrity: OK</b> - all ' + data.events.length + ' published signature events link correctly.' +
-      (anchored ? '<br>Latest public anchor: ' + lastAnchor.date + ' (matches current chain head).' : lastAnchor ? '<br>Latest public anchor: ' + lastAnchor.date + '. The chain has grown since; the next daily publication will anchor it.' : '<br>No anchors published yet.');
+    showChainStatus(frag(bold('Chain integrity check FAILED', '#7f1d1d'), ' at one of the records - the log does not verify. This should never happen; please contact Ploxi.'));
+    showStatus('error', frag(bold('Cannot verify.'), ' The public signing log failed its integrity check, so no match in it can be trusted.'));
+    return;
   }
+  if (!anchorCheck.ok) {
+    const a = anchorCheck.badAnchor;
+    showChainStatus(frag(bold('Anchor check FAILED', '#7f1d1d'), ' - the published anchor' + (a && a.date ? ' dated ' + a.date : '') + ' does not match the chain. The log may have been rewritten; please contact Ploxi.'));
+    showStatus('error', frag(bold('Cannot verify.'), ' The public signing log does not match its published anchors, so no match in it can be trusted.'));
+    return;
+  }
+
+  const covered = anchorCheck.covered;
+  const lastAnchor = data.anchors[data.anchors.length - 1];
+  showChainStatus(frag(
+    bold('Chain integrity: OK'), ' - all ' + data.events.length + ' published signature events link correctly.', null,
+    lastAnchor
+      ? (data.anchors.length === 1 ? 'The public anchor matches' : 'All ' + data.anchors.length + ' public anchors match') + ' the chain. Latest: ' + lastAnchor.date +
+        (covered === data.events.length ? ' (matches current chain head).' : '. The chain has grown since; the next daily publication will anchor it.')
+      : 'No anchors published yet.'));
+
+  // 2. Report matches: green only for events covered by a verified anchor.
+  const matches = [];
+  data.events.forEach((e, i) => { if (e.doc_sha256 === hash) matches.push({ e, anchored: i < covered }); });
+  if (matches.length === 0) {
+    showStatus('error', frag(bold('No matching signature record found'), ' in the public log (which currently contains ' + data.events.length + ' signature events). Either the document was not signed on the Ploxi platform, or its signature has not yet been published to the public log (publication happens daily).'));
+    return;
+  }
+  const EVENT_LABELS = { vendor_signed: 'vendor signed', countersigned: 'counter-signed', cert_issued: 'certificate fingerprint registered' };
+  const allAnchored = matches.every(m => m.anchored);
+  const parts = [];
+  matches.forEach(({ e, anchored }, i) => {
+    if (i) parts.push(null);
+    parts.push(bold(anchored ? 'Match found.' : 'Found, not yet anchored.'), ' ' +
+      (EVENT_LABELS[e.event] || String(e.event).replace('_', ' ')) +
+      ' on ' + fmtDate(e.created_at) +
+      ' (agreement ' + String(e.agreement_id).slice(0, 8) + '...)');
+  });
+  if (!allAnchored) parts.push(null, null, 'This record is in the log but has not yet been covered by a daily public anchor, so it cannot be fully verified yet. Check again after the next daily publication.');
+  parts.push(null, null, 'Fingerprint:', null, mono(hash));
+  showStatus(allAnchored ? 'ok' : 'warn', frag(...parts));
 }
 
 const drop = document.getElementById('drop');
@@ -152,7 +217,8 @@ drop.addEventListener('drop', e => {
 fileInput.addEventListener('change', () => { if (fileInput.files[0]) handleFile(fileInput.files[0]); });
 
 async function handleFile(f) {
-  showStatus(true, 'Hashing <b>' + f.name + '</b> locally (the file never leaves your device)...');
+  document.getElementById('chainStatus').style.display = 'none';
+  showStatus('neutral', frag('Hashing ', bold(f.name), ' locally (the file never leaves your device)...'));
   const buf = await f.arrayBuffer();
   const hash = await sha256Hex(buf);
   await verifyByHash(hash);
