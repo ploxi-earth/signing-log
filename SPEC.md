@@ -37,9 +37,11 @@ into the verifier).
 
 Events in the Climate Finance chain (`cf-events.jsonl`): `draft_uploaded`, `sent`,
 `viewed`, `client_signed`, `countersigned`, `cert_issued` (as above), `cancelled`, and
-`uploaded_signed`. **`uploaded_signed` means a copy already signed on paper was uploaded:**
-it proves that file has not changed since it was stored, not that it was signed
-electronically. Each chain is verified on its own; the two are never interleaved.
+`uploaded_signed`, `uploaded_counterparty_signed`. **`uploaded_signed` means a copy already
+signed by both parties on paper was uploaded:** it proves that file has not changed since it was
+stored, not that it was signed electronically. **`uploaded_counterparty_signed` means only the
+other party had signed that copy — Ploxi had not**; a later `countersigned` event on the same
+document records Ploxi's signature. Each chain is verified on its own; the two are never interleaved.
 
 Signer names, emails, IP addresses and other evidence are recorded privately on the
 platform (and printed inside the signed PDF's audit certificate page) but are

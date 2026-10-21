@@ -205,7 +205,8 @@ async function verifyByHash(hash) {
   }
   const EVENT_LABELS = {
     vendor_signed: 'vendor signed', countersigned: 'counter-signed', cert_issued: 'certificate fingerprint registered',
-    client_signed: 'signed by the client', uploaded_signed: 'paper-signed copy uploaded (not an e-signature)',
+    client_signed: 'signed by the client', uploaded_signed: 'copy signed by both parties on paper, uploaded (not an e-signature)',
+    uploaded_counterparty_signed: 'copy signed by the other party only, uploaded - NOT signed by Ploxi',
     draft_uploaded: 'draft uploaded', sent: 'sent for signature', viewed: 'opened by the signer', cancelled: 'cancelled',
   };
   const allAnchored = matches.every(m => m.anchored);
