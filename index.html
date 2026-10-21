@@ -46,7 +46,11 @@
 
 <script>
 'use strict';
-const DATA_URLS = { events: 'events.jsonl', anchors: 'anchors.jsonl' };
+// Two independent chains: partner agreements, and Climate Finance NDAs / mandates (from 21 Oct 2026).
+const LOGS = [
+  { key: 'partners', label: 'partner agreements', events: 'events.jsonl', anchors: 'anchors.jsonl', required: true },
+  { key: 'cf', label: 'Climate Finance NDAs & mandates', events: 'cf-events.jsonl', anchors: 'cf-anchors.jsonl', required: false },
+];
 
 async function sha256Hex(buffer) {
   const digest = await crypto.subtle.digest('SHA-256', buffer);
@@ -61,15 +65,19 @@ async function computeRecordHash(prev, agreementId, event, docSha, createdAt) {
   return sha256Hex(buf);
 }
 
-async function loadData() {
+const parseLines = (t) => t.split('\n').filter(l => l.trim()).map(l => JSON.parse(l));
+async function loadLog(log) {
   const [evRes, anRes] = await Promise.all([
-    fetch(DATA_URLS.events + '?t=' + Date.now()),
-    fetch(DATA_URLS.anchors + '?t=' + Date.now()),
+    fetch(log.events + '?t=' + Date.now()),
+    fetch(log.anchors + '?t=' + Date.now()),
   ]);
-  if (!evRes.ok || !anRes.ok) throw new Error('fetch failed');
-  const events = (await evRes.text()).split('\n').filter(l => l.trim()).map(l => JSON.parse(l));
-  const anchors = (await anRes.text()).split('\n').filter(l => l.trim()).map(l => JSON.parse(l));
-  return { events, anchors };
+  // A chain that has not been published yet is simply empty (the CF chain starts later).
+  if (!log.required && evRes.status === 404) return { ...log, events: [], anchors: [] };
+  if (!evRes.ok || (!anRes.ok && anRes.status !== 404)) throw new Error('fetch failed');
+  return { ...log, events: parseLines(await evRes.text()), anchors: anRes.ok ? parseLines(await anRes.text()) : [] };
+}
+async function loadData() {
+  return Promise.all(LOGS.map(loadLog));
 }
 
 async function fullVerify(events) {
@@ -153,50 +161,61 @@ async function verifyByHash(hash) {
   document.getElementById('chainStatus').style.display = 'none';
   if (!/^[a-f0-9]{64}$/.test(hash)) { showStatus('error', 'That is not a valid SHA-256 fingerprint (expected 64 hex characters).'); return; }
   showStatus('neutral', 'Checking the public signing log...');
-  let data;
-  try { data = await loadData(); } catch (e) { showStatus('error', 'Could not load the signing log. Please retry.'); return; }
+  let logs;
+  try { logs = await loadData(); } catch (e) { showStatus('error', 'Could not load the signing log. Please retry.'); return; }
 
-  // 1. Verify the whole chain and every anchor before reporting any match.
-  const chain = await fullVerify(data.events);
-  const anchorCheck = chain.ok ? verifyAnchors(data.events, data.anchors) : null;
-
-  if (!chain.ok) {
-    showChainStatus(frag(bold('Chain integrity check FAILED', '#7f1d1d'), ' at one of the records - the log does not verify. This should never happen; please contact Ploxi.'));
-    showStatus('error', frag(bold('Cannot verify.'), ' The public signing log failed its integrity check, so no match in it can be trusted.'));
-    return;
+  // 1. Verify every chain and its anchors before reporting any match.
+  const statusParts = [];
+  const results = [];
+  for (const log of logs) {
+    const chain = await fullVerify(log.events);
+    const anchorCheck = chain.ok ? verifyAnchors(log.events, log.anchors) : null;
+    if (!chain.ok) {
+      showChainStatus(frag(bold('Chain integrity check FAILED', '#7f1d1d'), ' in the ' + log.label + ' log - it does not verify. This should never happen; please contact Ploxi.'));
+      showStatus('error', frag(bold('Cannot verify.'), ' The public signing log failed its integrity check, so no match in it can be trusted.'));
+      return;
+    }
+    if (!anchorCheck.ok) {
+      const a = anchorCheck.badAnchor;
+      showChainStatus(frag(bold('Anchor check FAILED', '#7f1d1d'), ' - a published anchor of the ' + log.label + ' log' + (a && a.date ? ' dated ' + a.date : '') + ' does not match its chain. The log may have been rewritten; please contact Ploxi.'));
+      showStatus('error', frag(bold('Cannot verify.'), ' The public signing log does not match its published anchors, so no match in it can be trusted.'));
+      return;
+    }
+    results.push({ log, covered: anchorCheck.covered });
+    if (log.events.length === 0) continue;
+    const lastAnchor = log.anchors[log.anchors.length - 1];
+    if (statusParts.length) statusParts.push(null);
+    statusParts.push(bold('Chain integrity: OK'), ' - ' + log.label + ': all ' + log.events.length + ' published events link correctly. ' +
+      (lastAnchor
+        ? (log.anchors.length === 1 ? 'The public anchor matches' : 'All ' + log.anchors.length + ' public anchors match') + ' the chain. Latest: ' + lastAnchor.date +
+          (anchorCheck.covered === log.events.length ? ' (matches current chain head).' : '. The chain has grown since; the next daily publication will anchor it.')
+        : 'No anchors published yet.'));
   }
-  if (!anchorCheck.ok) {
-    const a = anchorCheck.badAnchor;
-    showChainStatus(frag(bold('Anchor check FAILED', '#7f1d1d'), ' - the published anchor' + (a && a.date ? ' dated ' + a.date : '') + ' does not match the chain. The log may have been rewritten; please contact Ploxi.'));
-    showStatus('error', frag(bold('Cannot verify.'), ' The public signing log does not match its published anchors, so no match in it can be trusted.'));
-    return;
-  }
-
-  const covered = anchorCheck.covered;
-  const lastAnchor = data.anchors[data.anchors.length - 1];
-  showChainStatus(frag(
-    bold('Chain integrity: OK'), ' - all ' + data.events.length + ' published signature events link correctly.', null,
-    lastAnchor
-      ? (data.anchors.length === 1 ? 'The public anchor matches' : 'All ' + data.anchors.length + ' public anchors match') + ' the chain. Latest: ' + lastAnchor.date +
-        (covered === data.events.length ? ' (matches current chain head).' : '. The chain has grown since; the next daily publication will anchor it.')
-      : 'No anchors published yet.'));
+  showChainStatus(frag(...statusParts));
 
   // 2. Report matches: green only for events covered by a verified anchor.
   const matches = [];
-  data.events.forEach((e, i) => { if (e.doc_sha256 === hash) matches.push({ e, anchored: i < covered }); });
+  for (const { log, covered } of results) {
+    log.events.forEach((e, i) => { if (e.doc_sha256 === hash) matches.push({ e, anchored: i < covered, log }); });
+  }
+  const total = results.reduce((n, r) => n + r.log.events.length, 0);
   if (matches.length === 0) {
-    showStatus('error', frag(bold('No matching signature record found'), ' in the public log (which currently contains ' + data.events.length + ' signature events). Either the document was not signed on the Ploxi platform, or its signature has not yet been published to the public log (publication happens daily).'));
+    showStatus('error', frag(bold('No matching signature record found'), ' in the public log (which currently contains ' + total + ' signature events). Either the document was not signed on the Ploxi platform, or its signature has not yet been published to the public log (publication happens daily).'));
     return;
   }
-  const EVENT_LABELS = { vendor_signed: 'vendor signed', countersigned: 'counter-signed', cert_issued: 'certificate fingerprint registered' };
+  const EVENT_LABELS = {
+    vendor_signed: 'vendor signed', countersigned: 'counter-signed', cert_issued: 'certificate fingerprint registered',
+    client_signed: 'signed by the client', uploaded_signed: 'paper-signed copy uploaded (not an e-signature)',
+    draft_uploaded: 'draft uploaded', sent: 'sent for signature', viewed: 'opened by the signer', cancelled: 'cancelled',
+  };
   const allAnchored = matches.every(m => m.anchored);
   const parts = [];
-  matches.forEach(({ e, anchored }, i) => {
+  matches.forEach(({ e, anchored, log }, i) => {
     if (i) parts.push(null);
     parts.push(bold(anchored ? 'Match found.' : 'Found, not yet anchored.'), ' ' +
       (EVENT_LABELS[e.event] || String(e.event).replace('_', ' ')) +
       ' on ' + fmtDate(e.created_at) +
-      ' (agreement ' + String(e.agreement_id).slice(0, 8) + '...)');
+      ' (' + log.label + ', document ' + String(e.agreement_id).slice(0, 8) + '...)');
   });
   if (!allAnchored) parts.push(null, null, 'This record is in the log but has not yet been covered by a daily public anchor, so it cannot be fully verified yet. Check again after the next daily publication.');
   parts.push(null, null, 'Fingerprint:', null, mono(hash));

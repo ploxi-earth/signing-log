@@ -10,6 +10,8 @@ document can be checked by anyone, without trusting Ploxi's own database.
 |---|---|
 | `events.jsonl` | One JSON line per signature event, in chain order. Updated daily. |
 | `anchors.jsonl` | One JSON line per day: the chain head at publication time, dated by GitHub's commit history. |
+| `cf-events.jsonl` | The second chain: Climate Finance NDAs, mandates and engagement letters (from 21 Oct 2026). Same record format and scheme, its own GENESIS. |
+| `cf-anchors.jsonl` | Daily anchors for the Climate Finance chain. |
 | `index.html` | Browser-based verifier (also served at the GitHub Pages URL). Files are hashed locally; nothing is uploaded. |
 | `open/chain-verification.ts` | Open-source reference implementation of the hashing scheme, extracted verbatim from the platform's signing engine. |
 
@@ -33,6 +35,12 @@ so the full delivered PDF is matched by the `countersigned` event instead,
 while `cert_issued` makes the printed number itself checkable by pasting it
 into the verifier).
 
+Events in the Climate Finance chain (`cf-events.jsonl`): `draft_uploaded`, `sent`,
+`viewed`, `client_signed`, `countersigned`, `cert_issued` (as above), `cancelled`, and
+`uploaded_signed`. **`uploaded_signed` means a copy already signed on paper was uploaded:**
+it proves that file has not changed since it was stored, not that it was signed
+electronically. Each chain is verified on its own; the two are never interleaved.
+
 Signer names, emails, IP addresses and other evidence are recorded privately on the
 platform (and printed inside the signed PDF's audit certificate page) but are
 deliberately **not** published here.
@@ -51,7 +59,8 @@ record_hash = SHA-256( prev_hash | agreement_id | event | doc_sha256 | created_a
 
 ## What verification proves
 
-- A PDF whose SHA-256 appears in `events.jsonl` was signed on the Ploxi platform, and
+- A PDF whose SHA-256 appears in `events.jsonl` or `cf-events.jsonl` was signed on (or, for
+  `uploaded_signed`, uploaded to) the Ploxi platform, and
   the record of that signature has not been altered since the first anchor after its
   inclusion.
 - Existence timing is daily-granular (the anchor date). The signed PDF itself carries
